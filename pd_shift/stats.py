@@ -144,7 +144,8 @@ def build_stats_rows(
             metadata=context.get("metadata"),
             linked_records=context.get("linked_records", []),
         )
-        ticket_label = ticket or f"#{incident.get('incident_number')}" or incident_id
+        number = incident.get("incident_number")
+        ticket_label = ticket or (f"#{number}" if number else incident_id)
         created_at = incident.get("created_at")
         resolved_at = incident.get("resolved_at")
         is_resolved = bool(resolved_at)

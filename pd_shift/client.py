@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -40,6 +42,8 @@ class PDError(RuntimeError):
 
 class PDClient:
     BASE = "https://api.pagerduty.com"
+    MAX_RETRIES = 4
+    MAX_WORKERS = 8
 
     def __init__(self, token: str | None = None, from_email: str | None = None):
         self.token = (
@@ -56,6 +60,19 @@ class PDClient:
             .strip()
             or None
         )
+        # One pooled, keep-alive client per PDClient. httpx.Client is thread-safe,
+        # so it is shared across the worker threads in the *_batch helpers below.
+        self._client = httpx.Client(timeout=30.0)
+        self._me_cache: dict | None = None
+
+    def close(self) -> None:
+        self._client.close()
+
+    def __enter__(self) -> "PDClient":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
 
     def _headers(self, *, write: bool = False) -> dict[str, str]:
         headers = {
@@ -68,26 +85,44 @@ class PDClient:
                 headers["From"] = self.from_email
         return headers
 
+    def _retry_delay(self, response: httpx.Response, attempt: int) -> float:
+        retry_after = response.headers.get("Retry-After", "").strip()
+        if retry_after.isdigit():
+            return float(retry_after)
+        return float(2 ** attempt)
+
     def _request(self, method: str, path: str, *, write: bool = False, **kwargs: Any) -> dict:
         url = f"{self.BASE}{path}"
-        with httpx.Client(timeout=30.0) as client:
-            response = client.request(method, url, headers=self._headers(write=write), **kwargs)
-        if response.status_code >= 400:
-            detail = response.text.strip() or response.reason_phrase
-            raise PDError(f"PagerDuty API {response.status_code}: {detail}")
-        if not response.content:
-            return {}
-        return response.json()
+        attempt = 0
+        while True:
+            response = self._client.request(
+                method, url, headers=self._headers(write=write), **kwargs
+            )
+            # Retry on rate limits (429) and transient server errors (5xx).
+            if (response.status_code == 429 or response.status_code >= 500) and attempt < self.MAX_RETRIES:
+                time.sleep(self._retry_delay(response, attempt))
+                attempt += 1
+                continue
+            if response.status_code >= 400:
+                detail = response.text.strip() or response.reason_phrase
+                raise PDError(f"PagerDuty API {response.status_code}: {detail}")
+            if not response.content:
+                return {}
+            return response.json()
 
     def me(self) -> dict:
+        if self._me_cache is not None:
+            return self._me_cache
         try:
-            return self._request("GET", "/users/me")["user"]
+            user = self._request("GET", "/users/me")["user"]
         except PDError as exc:
             if "404" in str(exc) or "403" in str(exc):
                 raise PDError(
                     "GET /users/me failed — use a user API token, or set PD_FROM for account keys"
                 ) from exc
             raise
+        self._me_cache = user
+        return user
 
     def list_open_incidents(
         self,
@@ -315,6 +350,58 @@ class PDClient:
     def incident_linked_records(self, incident_id: str) -> list[dict]:
         return self.incident_ticket_context(incident_id)["linked_records"]
 
+    def incident_ticket_contexts(
+        self,
+        incident_ids: list[str],
+        *,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> dict[str, dict]:
+        """Fetch ticket context for many incidents in parallel (N+1, pooled)."""
+        results: dict[str, dict] = {}
+        total = len(incident_ids)
+        if total == 0:
+            return results
+
+        done = 0
+        with ThreadPoolExecutor(max_workers=min(self.MAX_WORKERS, total)) as pool:
+            futures = {
+                pool.submit(self.incident_ticket_context, incident_id): incident_id
+                for incident_id in incident_ids
+            }
+            for future in as_completed(futures):
+                incident_id = futures[future]
+                results[incident_id] = future.result()
+                done += 1
+                if on_progress:
+                    on_progress(done, total)
+        return results
+
+    def incident_notes_batch(
+        self,
+        incident_ids: list[str],
+        *,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> dict[str, list[dict]]:
+        """Fetch notes for many incidents in parallel (N+1, pooled)."""
+        results: dict[str, list[dict]] = {}
+        total = len(incident_ids)
+        if total == 0:
+            return results
+
+        done = 0
+        with ThreadPoolExecutor(max_workers=min(self.MAX_WORKERS, total)) as pool:
+            futures = {
+                pool.submit(self.incident_notes, incident_id): incident_id
+                for incident_id in incident_ids
+            }
+            for future in as_completed(futures):
+                incident_id = futures[future]
+                results[incident_id] = future.result()
+                done += 1
+                if on_progress:
+                    on_progress(done, total)
+        return results
+
     def inspect_incident(self, incident_id: str) -> dict:
         """Raw API slices useful for debugging INC / linked-record parsing."""
         includes = ["external_references", "metadata", "custom_fields", "notes"]
@@ -421,8 +508,9 @@ class PDClient:
 
         ref_upper = ref.upper()
         if ref_upper.startswith("INC"):
+            contexts = self.incident_ticket_contexts([inc["id"] for inc in incidents])
             for incident in incidents:
-                context = self.incident_ticket_context(incident["id"])
+                context = contexts.get(incident["id"], {})
                 ticket = ticket_from_incident(
                     metadata=context.get("metadata"),
                     linked_records=context.get("linked_records", []),

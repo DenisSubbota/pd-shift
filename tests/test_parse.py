@@ -7,6 +7,7 @@ from pd_shift.parse import (
     ticket_from_incident,
     ticket_from_linked_records,
     ticket_from_metadata,
+    title_has_pmm_merge_pattern,
 )
 
 SAMPLE_METADATA = {
@@ -71,3 +72,36 @@ def test_format_line_example():
         description=description_from_title(SAMPLE_TITLE, "Zephyr Labs", host),
     )
     assert line == "INC0011223 - Zephyr Labs - Disk Space Low - zephyr-db-01"
+
+
+PROXYSQL_GLUED = (
+    "ProxySQL Host Group Does Not Have Online Server - proxysql-1"
+    "Percona_MS_HostGroupDoesNotHaveOnlineServer - CRITICAL - "
+    "ProxySQL Host Group Does Not Have Online Server - proxysql-2"
+)
+MYSQL_READONLY_GLUED = (
+    "MySQL Primary ReadOnly - db-02-mysql"
+    "Percona_MS_MySQLPrimaryReadOnly - CRITICAL - "
+    "MySQL Primary ReadOnly - db-03-mysql"
+)
+
+
+def test_pmm_glued_proxysql_title():
+    assert description_from_title(PROXYSQL_GLUED, "", None) == (
+        "ProxySQL Host Group Does Not Have Online Server - proxysql-1, proxysql-2"
+    )
+    assert fixed_title_from_incident(PROXYSQL_GLUED) == (
+        "ProxySQL Host Group Does Not Have Online Server - proxysql-1, proxysql-2"
+    )
+    assert title_has_pmm_merge_pattern(PROXYSQL_GLUED)
+
+
+def test_pmm_glued_mysql_readonly_title():
+    assert description_from_title(MYSQL_READONLY_GLUED, "", None) == (
+        "MySQL Primary ReadOnly - db-02-mysql, db-03-mysql"
+    )
+    assert title_has_pmm_merge_pattern(MYSQL_READONLY_GLUED)
+
+
+def test_normal_percona_title_not_flagged_for_rename():
+    assert not title_has_pmm_merge_pattern(SAMPLE_TITLE)

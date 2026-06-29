@@ -230,7 +230,6 @@ pd config-path
 Requires Python **3.10+** and dev deps for tests:
 
 ```bash
-./venv/bin/pip install -e ".[dev]" 2>/dev/null || ./venv/bin/pip install -e .
-./venv/bin/pip install pytest
+./venv/bin/pip install -e ".[dev]"
 ./venv/bin/pytest -q
 ```

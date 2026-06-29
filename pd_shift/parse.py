@@ -82,6 +82,11 @@ PERCONA_ALERT_NOISE_RE = re.compile(
     r"(?:CRITICAL|WARNING|WARN)\s*-\s*",
     re.IGNORECASE,
 )
+PERCONA_MS_BLOCK_ANYWHERE_RE = re.compile(
+    r"Percona_?MS_[A-Za-z0-9_]+\s*-\s*(?:CRITICAL|WARNING|WARN)\s*-\s*",
+    re.IGNORECASE,
+)
+GLUED_BEFORE_PERCONA_RE = re.compile(r"(?<=[\w.-])(Percona_?MS_)", re.IGNORECASE)
 GASCAN_SEGMENT_RE = re.compile(r"^gascan$", re.IGNORECASE)
 
 
@@ -119,8 +124,63 @@ def customer_from_title(title: str, service: str = "") -> str:
     return EMPTY
 
 
+def unglue_pmm_title(title: str) -> str:
+    """PMM sometimes glues the host onto Percona_MS_ with no separator."""
+    return GLUED_BEFORE_PERCONA_RE.sub(r" - \1", normalize_title(title))
+
+
+def _alert_segments_from_title(title: str) -> list[str]:
+    title = unglue_pmm_title(title)
+    segments = [
+        part.strip(" -|")
+        for part in PERCONA_MS_BLOCK_ANYWHERE_RE.split(title)
+        if part.strip(" -|")
+    ]
+    return segments
+
+
+def _segment_desc_host(segment: str) -> tuple[str, str | None]:
+    parts = [part.strip() for part in segment.split(" - ") if part.strip()]
+    parts = [part for part in parts if not GASCAN_SEGMENT_RE.match(part)]
+    if len(parts) >= 2:
+        return " - ".join(parts[:-1]), parts[-1]
+    return clean_description(segment), None
+
+
+def collapse_pmm_segments(segments: list[str]) -> str:
+    if not segments:
+        return EMPTY
+    if len(segments) == 1:
+        return clean_description(segments[0])
+
+    parsed = [_segment_desc_host(segment) for segment in segments]
+    descriptions = [desc for desc, _host in parsed]
+    hosts = [host for _desc, host in parsed if host]
+
+    if len(set(descriptions)) == 1 and hosts:
+        return f"{descriptions[0]} - {', '.join(hosts)}"
+
+    return clean_description(" - ".join(segments))
+
+
+def normalize_pmm_title(title: str) -> str:
+    return collapse_pmm_segments(_alert_segments_from_title(title))
+
+
+def title_has_pmm_merge_pattern(title: str) -> bool:
+    """True when PMM likely glued or duplicated hosts in the PD title."""
+    raw = normalize_title(title)
+    if GLUED_BEFORE_PERCONA_RE.search(raw):
+        return True
+    segments = _alert_segments_from_title(raw)
+    if len(segments) < 2:
+        return False
+    descriptions = [_segment_desc_host(segment)[0] for segment in segments]
+    return len(set(descriptions)) == 1
+
+
 def host_from_title(title: str) -> str | None:
-    title = normalize_title(title)
+    title = normalize_pmm_title(title)
     for pattern in (
         re.compile(r"\brds-aurora[-\w]+", re.IGNORECASE),
         re.compile(r"\brds[-\w]+", re.IGNORECASE),
@@ -138,9 +198,7 @@ def host_from_title(title: str) -> str | None:
 
 def description_from_title(title: str, customer: str, host: str | None = None) -> str:
     del customer, host  # kept for call-site compatibility; host stays in description text
-    parts = [part.strip() for part in normalize_title(title).split(" - ") if part.strip()]
-    parts = [part for part in parts if not GASCAN_SEGMENT_RE.match(part)]
-    return clean_description(" - ".join(parts))
+    return normalize_pmm_title(title)
 
 
 def fixed_title_from_incident(title: str, service: str = "") -> str:

@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import os
 import sys
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import click
 
@@ -20,7 +18,13 @@ from pd_shift.merge import (
     incident_ticket_label,
     merge_example_text,
 )
-from pd_shift.parse import alert_signature, fixed_title_from_incident, incident_matches_signature, normalize_title
+from pd_shift.parse import (
+    alert_signature,
+    fixed_title_from_incident,
+    incident_matches_signature,
+    normalize_title,
+    title_has_pmm_merge_pattern,
+)
 from pd_shift.progress import ProgressLine
 from pd_shift.settings import config_path, config_value
 from pd_shift.stats import (
@@ -64,26 +68,9 @@ def _ticket_context_for_incidents(
     *,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, dict]:
-    results: dict[str, dict] = {}
-    total = len(incidents)
-    if total == 0:
-        return results
-
-    def fetch(incident_id: str) -> tuple[str, dict]:
-        worker = PDClient(token=client.token, from_email=client.from_email)
-        return incident_id, worker.incident_ticket_context(incident_id)
-
-    done = 0
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = [pool.submit(fetch, inc["id"]) for inc in incidents]
-        for future in as_completed(futures):
-            incident_id, context = future.result()
-            results[incident_id] = context
-            done += 1
-            if on_progress:
-                on_progress(done, total)
-
-    return results
+    return client.incident_ticket_contexts(
+        [inc["id"] for inc in incidents], on_progress=on_progress
+    )
 
 
 def _print_acked_incidents(client: PDClient, incidents: list[dict]) -> None:
@@ -167,6 +154,18 @@ def list_cmd(mine: bool, team: tuple[str, ...], show_time: bool):
 
     render_incident_table(console, sort_incident_rows(rows, by_time=show_time), show_time=show_time)
 
+    rename_hints: list[str] = []
+    for incident, row in zip(incidents, rows):
+        if not title_has_pmm_merge_pattern(incident.get("title", "")):
+            continue
+        label = row.ticket if row.has_ticket else incident_ticket_label(
+            incident, context_by_id.get(incident["id"], {})
+        )
+        rename_hints.append(f"pd rename {label}")
+
+    if rename_hints:
+        console.print(f"[dim]PMM merged title — fix: {', '.join(rename_hints)}[/dim]")
+
 
 @cli.command("ack")
 @click.argument("ticket", required=False)
@@ -211,8 +210,9 @@ def ack_cmd(ticket: str | None, mine: bool, team: tuple[str, ...], dry_run: bool
 
     if dry_run:
         console.print(f"[yellow]dry-run:[/yellow] would ack {len(to_ack)} incident(s):")
+        contexts = _ticket_context_for_incidents(client, to_ack)
         for incident in to_ack:
-            context = client.incident_ticket_context(incident["id"])
+            context = contexts.get(incident["id"], {})
             label = incident_ticket_label(incident, context)
             description = incident_display_title(incident)
             console.print(f"  {label}  -  {description}")
@@ -531,10 +531,12 @@ def stats_cmd(
 
         notes_by_id: dict[str, list[dict]] | None = None
         if show_notes:
-            notes_by_id = {}
-            for index, incident in enumerate(matched, start=1):
-                progress.update(f"{alert_label}: fetching notes... {index}/{len(matched)}")
-                notes_by_id[incident["id"]] = client.incident_notes(incident["id"])
+            def on_notes(done: int, total: int) -> None:
+                progress.update(f"{alert_label}: fetching notes... {done}/{total}")
+
+            notes_by_id = client.incident_notes_batch(
+                [incident["id"] for incident in matched], on_progress=on_notes
+            )
 
         progress.done()
 

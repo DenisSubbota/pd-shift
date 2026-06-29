@@ -61,7 +61,7 @@ def test_print_inc_not_open_hint(capsys):
 
     from rich.console import Console
 
-    out = Console(file=StringIO(), width=120, force_terminal=True)
+    out = Console(file=StringIO(), width=120, highlight=False)
     print_inc_not_open_hint(out, "INC0011223")
     text = out.file.getvalue()
     assert "INC0011223 is not in open incidents" in text

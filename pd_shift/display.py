@@ -12,8 +12,10 @@ from pd_shift.parse import (
 )
 from pd_shift.timefmt import format_trigger_time, parse_pd_timestamp
 
+from pd_shift.console_io import EMPTY
+
 TRIGGERED = "triggered"
-MISSING_TICKET = "—"
+MISSING_TICKET = EMPTY
 SEPARATOR = " - "
 
 
@@ -23,7 +25,7 @@ class IncidentRow:
     customer: str
     description: str
     status: str
-    triggered: str = "—"
+    triggered: str = EMPTY
     triggered_at: datetime | None = None
 
     @property
@@ -62,7 +64,7 @@ def incident_row_from(
 
 
 def _customer_sort_key(name: str) -> str:
-    return name.casefold() if name != "—" else "\uffff"
+    return name.casefold() if name != EMPTY else "\uffff"
 
 
 def sort_incident_rows(rows: list[IncidentRow], *, by_time: bool = False) -> list[IncidentRow]:

@@ -5,6 +5,7 @@ import sys
 import click
 import questionary
 
+from pd_shift.console_io import EMPTY
 from pd_shift.parse import (
     customer_from_title,
     fixed_title_from_incident,
@@ -37,7 +38,7 @@ def incident_ticket_label(incident: dict, context: dict) -> str:
 
 
 def customers_compatible(customer_a: str, customer_b: str) -> bool:
-    if customer_a == "—" or customer_b == "—":
+    if customer_a == EMPTY or customer_b == EMPTY:
         return False
     return customer_a.casefold() == customer_b.casefold()
 

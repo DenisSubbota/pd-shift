@@ -24,7 +24,7 @@ def test_sort_groups_by_customer():
 
 def test_sort_no_inc_at_bottom_globally():
     rows = [
-        IncidentRow("—", "Alpha Co", "Alert no inc", "triggered"),
+        IncidentRow("-", "Alpha Co", "Alert no inc", "triggered"),
         IncidentRow("INC0011223", "Zephyr Labs", "Alert B", "acknowledged"),
         IncidentRow("INC0099887", "Alpha Co", "Alert A", "triggered"),
     ]
@@ -32,14 +32,14 @@ def test_sort_no_inc_at_bottom_globally():
     assert [row.ticket for row in sorted_rows] == [
         "INC0099887",
         "INC0011223",
-        "—",
+        "-",
     ]
     assert sorted_rows[-1].customer == "Alpha Co"
 
 
 def test_sort_missing_inc_last_within_customer():
     rows = [
-        IncidentRow("—", "Zephyr Labs", "Alert no inc", "triggered"),
+        IncidentRow("-", "Zephyr Labs", "Alert no inc", "triggered"),
         IncidentRow("INC0011223", "Zephyr Labs", "Alert B", "acknowledged"),
         IncidentRow("INC0099887", "Alpha Co", "Alert A", "triggered"),
     ]
@@ -50,7 +50,7 @@ def test_sort_missing_inc_last_within_customer():
         "Zephyr Labs",
     ]
     assert sorted_rows[1].ticket == "INC0011223"
-    assert sorted_rows[2].ticket == "—"
+    assert sorted_rows[2].ticket == "-"
 
 
 def test_sort_triggered_before_acked_within_customer():
@@ -79,7 +79,7 @@ def test_sort_by_time_ignores_customer_and_inc():
             triggered_at=datetime(2026, 6, 27, 8, 0, tzinfo=timezone.utc),
         ),
         IncidentRow(
-            "—",
+            "-",
             "Alpha Co",
             "Alert no inc",
             "acknowledged",
@@ -87,7 +87,7 @@ def test_sort_by_time_ignores_customer_and_inc():
         ),
     ]
     sorted_rows = sort_incident_rows(rows, by_time=True)
-    assert [row.ticket for row in sorted_rows] == ["INC0000003", "—", "INC0000001"]
+    assert [row.ticket for row in sorted_rows] == ["INC0000003", "-", "INC0000001"]
 
 
 def test_format_aligned_row_uses_dash_separators():

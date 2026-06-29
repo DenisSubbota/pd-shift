@@ -221,7 +221,7 @@ pd config-path
 | `Write actions require... PD_FROM` | Use a user API token, or set `from_email=` |
 | `pd stats INC…` very slow | Use PD number `pd stats 123456`, or `--yes` to force INC scan |
 | `no incident found … last 60 days` | Incident older than window — try `--days 90` or use PD id |
-| Notes look like HTML | Should be auto-converted; report if not |
+| `UnicodeEncodeError` / `charmap` | Fixed in recent versions (UTF-8 stdout + ASCII output). `git pull` and reinstall: `pip install -e .` |
 
 ---
 

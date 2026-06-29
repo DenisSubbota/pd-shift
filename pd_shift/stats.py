@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.text import Text
 
 from pd_shift.htmltext import html_to_plain
+from pd_shift.console_io import EMPTY
 from pd_shift.parse import ticket_from_incident
 from pd_shift.timefmt import (
     format_duration,
@@ -24,14 +25,14 @@ FIRE_WINDOW_HOURS = 3
 
 
 def stats_alert_label(customer: str, signature: str) -> str:
-    return f"{customer} — {signature}"
+    return f"{customer} - {signature}"
 
 
 def print_inc_not_open_hint(console: Console, ticket: str) -> None:
     console.print(f"[yellow]{ticket} is not in open incidents.[/yellow]")
     console.print(
-        "Use the PD incident number instead — in PagerDuty: "
-        "[bold]Incidents → Incident #123456[/bold]"
+        "Use the PD incident number instead - in PagerDuty: "
+        "[bold]Incidents -> Incident #123456[/bold]"
     )
     console.print("Then run:  [cyan]pd stats 123456[/cyan]")
     console.print(
@@ -93,7 +94,7 @@ def _format_fire_range(start_hour: int, window_hours: int) -> str:
 
 def typical_fire(created_times: list[datetime], *, window_hours: int = FIRE_WINDOW_HOURS) -> tuple[str, int]:
     if not created_times:
-        return "—", 0
+        return EMPTY, 0
 
     counts = [0] * 24
     for created in created_times:
@@ -152,7 +153,7 @@ def build_stats_rows(
             StatsRow(
                 ticket=ticket_label,
                 started=format_timestamp_utc(created_at),
-                resolved=format_timestamp_utc(resolved_at) if resolved_at else "—",
+                resolved=format_timestamp_utc(resolved_at) if resolved_at else EMPTY,
                 duration=format_duration(created_at, resolved_at, now=current),
                 created_at=parse_pd_timestamp(created_at) if created_at else datetime.min.replace(tzinfo=timezone.utc),
                 is_resolved=is_resolved,
@@ -185,7 +186,7 @@ def summarize_stats(
         avg_seconds = sum(delta.total_seconds() for delta in resolved_deltas) / len(resolved_deltas)
         avg_duration = format_timedelta_duration(timedelta(seconds=avg_seconds))
     else:
-        avg_duration = "—"
+        avg_duration = EMPTY
 
     created_times = [row.created_at for row in rows]
     fire_range, fire_count = typical_fire(created_times)
@@ -243,7 +244,7 @@ def render_stats(
     show_notes: bool,
     window_days: int = STATS_WINDOW_DAYS,
 ) -> None:
-    console.print(f"{reference_label}  —  {signature}  ({customer})")
+    console.print(f"{reference_label}  -  {signature}  ({customer})")
     console.print()
 
     if not rows:
@@ -280,12 +281,12 @@ def render_stats(
             f"Avg duration:   {summary.avg_duration}  ({summary.resolved_count} resolved)"
         )
     else:
-        console.print("Avg duration:   —  (0 resolved)")
+        console.print(f"Avg duration:   {EMPTY}  (0 resolved)")
     if summary.count:
         console.print(
             f"Typical fire:   {summary.fire_range}  ({summary.fire_count}/{summary.count})"
         )
     else:
-        console.print("Typical fire:   —")
+        console.print(f"Typical fire:   {EMPTY}")
     console.print(f"Last seen:      {summary.last_seen}")
     console.print(f"Current:        {summary.current}")

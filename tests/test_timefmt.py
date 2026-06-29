@@ -22,7 +22,7 @@ def test_format_trigger_time_week_shows_date():
 
 
 def test_format_trigger_time_missing():
-    assert format_trigger_time(None) == "—"
+    assert format_trigger_time(None) == "-"
 
 
 def test_format_duration_resolved():

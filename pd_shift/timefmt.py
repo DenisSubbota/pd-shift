@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from pd_shift.console_io import EMPTY
+
 
 def parse_pd_timestamp(value: str) -> datetime:
     normalized = value.replace("Z", "+00:00")
@@ -14,7 +16,7 @@ def format_trigger_time(
     now: datetime | None = None,
 ) -> str:
     if not created_at:
-        return "—"
+        return EMPTY
 
     triggered = parse_pd_timestamp(created_at)
     current = now or datetime.now(timezone.utc)
@@ -46,7 +48,7 @@ def format_trigger_time(
 
 def format_timestamp_utc(value: str | None) -> str:
     if not value:
-        return "—"
+        return EMPTY
     return parse_pd_timestamp(value).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
@@ -57,14 +59,14 @@ def format_duration(
     now: datetime | None = None,
 ) -> str:
     if not start:
-        return "—"
+        return EMPTY
 
     started = parse_pd_timestamp(start)
     if end:
         ended = parse_pd_timestamp(end)
         delta = ended - started
         if delta.total_seconds() < 0:
-            return "—"
+            return EMPTY
         return _format_timedelta(delta)
 
     current = now or datetime.now(timezone.utc)
@@ -72,14 +74,14 @@ def format_duration(
         current = current.replace(tzinfo=timezone.utc)
     delta = current.astimezone(timezone.utc) - started.astimezone(timezone.utc)
     if delta.total_seconds() < 0:
-        return "—"
+        return EMPTY
     open_for = _format_timedelta(delta)
     return f"open ({open_for})"
 
 
 def format_timedelta_duration(delta: timedelta) -> str:
     if delta.total_seconds() < 0:
-        return "—"
+        return EMPTY
     return _format_timedelta(delta)
 
 

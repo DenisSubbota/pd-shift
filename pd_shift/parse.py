@@ -1,6 +1,8 @@
 import json
 import re
 
+from pd_shift.console_io import EMPTY
+
 INC_RE = re.compile(r"INC\d+", re.IGNORECASE)
 CUSTOMER_RE = re.compile(r"\[([^\]]+)\]")
 HOST_RE = re.compile(
@@ -86,7 +88,7 @@ GASCAN_SEGMENT_RE = re.compile(r"^gascan$", re.IGNORECASE)
 def clean_customer(name: str) -> str:
     name = normalize_title(name)
     if not name:
-        return "—"
+        return EMPTY
 
     parts = [part.strip() for part in name.split(" - ") if part.strip()]
     parts = [part for part in parts if not GASCAN_SEGMENT_RE.match(part)]
@@ -100,7 +102,7 @@ def clean_description(text: str) -> str:
     text = PERCONA_ALERT_NOISE_RE.sub("", text)
     text = re.sub(r"^Gascan\s*-\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s{2,}", " ", text).strip(" -|")
-    return text or "—"
+    return text or EMPTY
 
 
 def normalize_title(title: str) -> str:
@@ -114,7 +116,7 @@ def customer_from_title(title: str, service: str = "") -> str:
         return clean_customer(match.group(1))
     if service:
         return clean_customer(service.strip())
-    return "—"
+    return EMPTY
 
 
 def host_from_title(title: str) -> str | None:
@@ -168,5 +170,5 @@ def format_line(
     customer: str,
     description: str,
 ) -> str:
-    ticket_part = ticket or "—"
+    ticket_part = ticket or EMPTY
     return f"{ticket_part} - {customer} - {description}"

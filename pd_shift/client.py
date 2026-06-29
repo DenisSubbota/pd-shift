@@ -232,7 +232,7 @@ class PDClient:
             if on_progress:
                 suffix = "+" if more else "done"
                 on_progress(
-                    f"Looking up {ref}… page {page} ({checked} team incidents checked, {suffix})"
+                    f"Looking up {ref}... page {page} ({checked} team incidents checked, {suffix})"
                 )
 
         return None

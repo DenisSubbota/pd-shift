@@ -7,7 +7,8 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import click
-from rich.console import Console
+
+from pd_shift.console_io import make_console
 
 from pd_shift.client import PDClient, PDError
 from pd_shift.display import incident_row_from, render_incident_table, sort_incident_rows
@@ -31,7 +32,7 @@ from pd_shift.stats import (
     summarize_stats,
 )
 
-console = Console()
+console = make_console()
 
 
 def _team_ids(team: tuple[str, ...]) -> list[str]:
@@ -98,7 +99,7 @@ def _print_acked_incidents(client: PDClient, incidents: list[dict]) -> None:
 def _warn_if_unscoped(mine: bool, team: tuple[str, ...]) -> None:
     if not mine and not _team_ids(team):
         console.print(
-            "[yellow]warning:[/yellow] no PD_TEAM_ID / --team — listing all open incidents in account"
+            "[yellow]warning:[/yellow] no PD_TEAM_ID / --team - listing all open incidents in account"
         )
 
 
@@ -279,7 +280,7 @@ def rename_cmd(
         sys.exit(1)
 
     if new_title == old_title:
-        console.print(f"[dim]{ticket} title already matches list view — no change[/dim]")
+        console.print(f"[dim]{ticket} title already matches list view - no change[/dim]")
         return
 
     if dry_run:
@@ -387,7 +388,7 @@ def merge_cmd(
         sys.exit(1)
 
     if dry_run:
-        console.print(f"[yellow]dry-run:[/yellow] merge {source_label} → {parent_label}")
+        console.print(f"[yellow]dry-run:[/yellow] merge {source_label} -> {parent_label}")
         console.print(f"  customer: {parent_customer}")
         console.print(f"  title:    {final_title}")
         return
@@ -464,11 +465,11 @@ def stats_cmd(
     _warn_if_unscoped(mine, team)
     progress = ProgressLine(console)
     try:
-        progress.update("Connecting to PagerDuty…")
+        progress.update("Connecting to PagerDuty...")
         client = PDClient()
         team_ids = _team_ids(team) or None
 
-        progress.update("Loading open incidents…")
+        progress.update("Loading open incidents...")
         open_incidents = _load_incidents(client, mine=mine, team=team)
 
         def on_resolve(message: str) -> None:
@@ -499,12 +500,12 @@ def stats_cmd(
             reference.get("title", ""), service.get("summary", "")
         )
         alert_label = stats_alert_label(customer, signature)
-        progress.update(f"Identified → {alert_label}")
+        progress.update(f"Identified -> {alert_label}")
 
         def on_service_history(page: int, loaded: int, more: bool, scope: str) -> None:
             suffix = "+" if more else "done"
             progress.update(
-                f"{alert_label}: fetching {scope}… page {page} ({loaded} incidents, {suffix})"
+                f"{alert_label}: fetching {scope}... page {page} ({loaded} incidents, {suffix})"
             )
 
         historical = client.stats_history_for_reference(
@@ -514,7 +515,7 @@ def stats_cmd(
             on_page=on_service_history,
         )
 
-        progress.update(f"{alert_label}: matching in {len(historical)} service incidents…")
+        progress.update(f"{alert_label}: matching in {len(historical)} service incidents...")
         matched = [
             incident
             for incident in historical
@@ -522,7 +523,7 @@ def stats_cmd(
         ]
 
         def on_metadata(done: int, total: int) -> None:
-            progress.update(f"{alert_label}: loading INC metadata… {done}/{total}")
+            progress.update(f"{alert_label}: loading INC metadata... {done}/{total}")
 
         contexts = _ticket_context_for_incidents(client, matched, on_progress=on_metadata)
         ref_context = contexts.get(reference["id"]) or client.incident_ticket_context(reference["id"])
@@ -532,7 +533,7 @@ def stats_cmd(
         if show_notes:
             notes_by_id = {}
             for index, incident in enumerate(matched, start=1):
-                progress.update(f"{alert_label}: fetching notes… {index}/{len(matched)}")
+                progress.update(f"{alert_label}: fetching notes... {index}/{len(matched)}")
                 notes_by_id[incident["id"]] = client.incident_notes(incident["id"])
 
         progress.done()
@@ -562,6 +563,9 @@ def stats_cmd(
 
 
 def main():
+    from pd_shift.console_io import ensure_utf8_stdio
+
+    ensure_utf8_stdio()
     cli()
 
 

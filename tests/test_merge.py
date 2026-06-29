@@ -5,7 +5,7 @@ def test_customers_compatible():
     assert customers_compatible("Zephyr Labs", "Zephyr Labs")
     assert customers_compatible("Zephyr Labs", "zephyr labs")
     assert not customers_compatible("Zephyr Labs", "Northwind LLC")
-    assert not customers_compatible("—", "Zephyr Labs")
+    assert not customers_compatible("-", "Zephyr Labs")
 
 
 def test_incident_customer_from_service():

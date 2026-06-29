@@ -7,6 +7,7 @@ Designed for the **MySQL Managed Services** team in PagerDuty. All commands scop
 ## Quick start
 
 ```bash
+git clone git@github.com:DenisSubbota/pd-shift.git
 cd pd-shift
 python3 -m venv venv
 ./venv/bin/pip install -e .
@@ -15,9 +16,15 @@ python3 -m venv venv
 alias pd="$PWD/venv/bin/pd"
 ```
 
+HTTPS clone:
+
+```bash
+git clone https://github.com/DenisSubbota/pd-shift.git
+```
+
 1. Create a PagerDuty API token (below).
 2. Find your team id (below).
-3. Write `~/.config/pd-shift/conf`.
+3. Write `~/.config/pd-shift/conf` (never commit this file).
 4. Run `pd list`.
 
 ---

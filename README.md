@@ -49,7 +49,7 @@ Use a **User API Token** — not an account-level REST API key unless you know y
 
 1. Log in to PagerDuty (`https://your-org.pagerduty.com`).
 2. Click your avatar (top right) → **My Profile**.
-3. **User Settings** tab → **Create API User Token**.
+3. **User Settings** tab → **Create API User Key**.
 4. Name it e.g. `pd-shift`, copy the token (shown once).
 
 Put it in config as `token=` or export `PD_TOKEN`.

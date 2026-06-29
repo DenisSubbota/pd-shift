@@ -4,12 +4,21 @@ PagerDuty shift helper for Percona MySQL DBAs — list open alerts, ack, rename,
 
 Designed for the **MySQL Managed Services** team in PagerDuty. All commands scope to your configured team unless you pass `--team` or omit `team_id` (then the whole account is searched — slow and noisy).
 
+**Requires Python 3.10+.** macOS system `python3` is often 3.7–3.9 — use Homebrew Python if needed (`brew install python@3.12`).
+
 ## Quick start
 
 ```bash
 git clone git@github.com:DenisSubbota/pd-shift.git
 cd pd-shift
+
+# must be 3.10 or newer — check before creating the venv
+python3 --version
+
+# if python3 is too old, pick an installed 3.10+ binary explicitly, e.g.:
+# python3.12 -m venv venv
 python3 -m venv venv
+./venv/bin/pip install --upgrade pip
 ./venv/bin/pip install -e .
 
 # optional: shell alias
@@ -201,6 +210,8 @@ pd config-path
 
 | Problem | Fix |
 |---------|-----|
+| `No matching distribution found for httpx>=0.28` | Your venv Python is older than 3.10 (often macOS `python3` is 3.7). Remove `venv/`, install Python 3.10+ (`brew install python@3.12`), recreate: `python3.12 -m venv venv` |
+| `editable mode requires a setup.py` | Upgrade pip in the venv: `./venv/bin/pip install --upgrade pip`, then retry `pip install -e .` |
 | `PD token is not set` | Set `token=` in conf or `PD_TOKEN` |
 | `no PD_TEAM_ID` warning | Add `team_id` for **MySQL Managed Services** |
 | `Write actions require... PD_FROM` | Use a user API token, or set `from_email=` |
@@ -212,7 +223,10 @@ pd config-path
 
 ## Development
 
+Requires Python **3.10+** and dev deps for tests:
+
 ```bash
+./venv/bin/pip install -e ".[dev]" 2>/dev/null || ./venv/bin/pip install -e .
+./venv/bin/pip install pytest
 ./venv/bin/pytest -q
-./venv/bin/pip install -e .
 ```

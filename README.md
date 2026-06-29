@@ -4,7 +4,7 @@ PagerDuty shift helper for Percona MySQL DBAs — list open alerts, ack, rename,
 
 Designed for the **MySQL Managed Services** team in PagerDuty. All commands scope to your configured team unless you pass `--team` or omit `team_id` (then the whole account is searched — slow and noisy).
 
-**Requires Python 3.10+.** macOS system `python3` is often 3.7–3.9 — use Homebrew Python if needed (`brew install python@3.12`).
+**Requires Python 3.10+.** On macOS, `python` is often **2.7** and `python3` may be older than 3.10 — **do not remove system Python**. Use Homebrew's 3.12 explicitly.
 
 ## Quick start
 
@@ -12,18 +12,21 @@ Designed for the **MySQL Managed Services** team in PagerDuty. All commands scop
 git clone git@github.com:DenisSubbota/pd-shift.git
 cd pd-shift
 
-# must be 3.10 or newer — check before creating the venv
-python3 --version
+# macOS: install once if needed, then always use python3.12 (not `python` or bare `python3`)
+brew install python@3.12
+python3.12 --version    # must show 3.10+
 
-# if python3 is too old, pick an installed 3.10+ binary explicitly, e.g.:
-# python3.12 -m venv venv
-python3 -m venv venv
+rm -rf venv             # if you already created a venv with the wrong Python
+python3.12 -m venv venv
+./venv/bin/python --version   # should also be 3.12.x
 ./venv/bin/pip install --upgrade pip
 ./venv/bin/pip install -e .
 
 # optional: shell alias
 alias pd="$PWD/venv/bin/pd"
 ```
+
+**Do not use `python -m venv`** — on many Macs that is Python 2.7. You do not need to uninstall 2.7; just call `python3.12` by name.
 
 HTTPS clone:
 
@@ -210,7 +213,8 @@ pd config-path
 
 | Problem | Fix |
 |---------|-----|
-| `No matching distribution found for httpx>=0.28` | Your venv Python is older than 3.10 (often macOS `python3` is 3.7). Remove `venv/`, install Python 3.10+ (`brew install python@3.12`), recreate: `python3.12 -m venv venv` |
+| `python --version` shows 2.7 | Normal on macOS — ignore `python`. Use `python3.12 -m venv venv` after `brew install python@3.12` |
+| `No matching distribution found for httpx>=0.28` | venv was created with Python older than 3.10. `rm -rf venv`, then `python3.12 -m venv venv` and reinstall |
 | `editable mode requires a setup.py` | Upgrade pip in the venv: `./venv/bin/pip install --upgrade pip`, then retry `pip install -e .` |
 | `PD token is not set` | Set `token=` in conf or `PD_TOKEN` |
 | `no PD_TEAM_ID` warning | Add `team_id` for **MySQL Managed Services** |

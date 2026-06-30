@@ -49,6 +49,27 @@ def test_resolve_incidents_builds_resolved_payload(monkeypatch):
     }
 
 
+def test_help_lists_all_commands_without_truncation():
+    result = CliRunner().invoke(cli, ["--help"])
+    assert result.exit_code == 0
+    # Isolate the "Commands:" block (the usage line legitimately ends "[ARGS]...").
+    command_block = result.output.split("Commands:", 1)[1]
+    # Click truncates long command summaries with "..."; each command gets an
+    # explicit short_help so the listing stays complete and readable.
+    assert "..." not in command_block
+    for name in (
+        "ack",
+        "config-path",
+        "inspect",
+        "list",
+        "merge",
+        "rename",
+        "resolve",
+        "stats",
+    ):
+        assert name in command_block
+
+
 def test_resolve_requires_inc_ticket():
     result = CliRunner().invoke(cli, ["resolve", "123456"])
     assert result.exit_code == 1

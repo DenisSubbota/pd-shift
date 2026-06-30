@@ -107,13 +107,13 @@ def cli():
     """PagerDuty shift helper — list open alerts, ack, and resolve."""
 
 
-@cli.command("config-path")
+@cli.command("config-path", short_help="Print the config file path.")
 def config_path_cmd():
     """Print the config file path."""
     console.print(str(config_path()))
 
 
-@cli.command("list")
+@cli.command("list", short_help="List open alerts (INC, customer, description, host).")
 @click.option(
     "--mine/--all",
     default=False,
@@ -166,7 +166,7 @@ def list_cmd(mine: bool, team: tuple[str, ...], show_time: bool):
     render_incident_table(console, sort_incident_rows(rows, by_time=show_time), show_time=show_time)
 
 
-@cli.command("ack")
+@cli.command("ack", short_help="Ack triggered incidents (all, or one by INC).")
 @click.argument("ticket", required=False)
 @click.option(
     "--mine/--all",
@@ -224,7 +224,7 @@ def ack_cmd(ticket: str | None, mine: bool, team: tuple[str, ...], dry_run: bool
     _print_acked_incidents(client, to_ack)
 
 
-@cli.command("resolve")
+@cli.command("resolve", short_help="Resolve one triggered/acked incident by INC.")
 @click.argument("ticket")
 @click.option("-m", "--message", default=None, help="Resolution note added to the incident.")
 @click.option("--dry-run", is_flag=True, help="Print what would be resolved without calling PD.")
@@ -279,7 +279,7 @@ def resolve_cmd(ticket: str, message: str | None, dry_run: bool):
         console.print(f"  note: {message.strip()}")
 
 
-@cli.command("rename")
+@cli.command("rename", short_help="Rename an open incident by INC (or PD number).")
 @click.argument("ticket")
 @click.option(
     "-d",
@@ -351,7 +351,7 @@ def rename_cmd(
     console.print(f"  {new_title}")
 
 
-@cli.command("merge")
+@cli.command("merge", short_help="Merge two open incidents (same customer).")
 @click.argument("parent_ticket", required=False)
 @click.argument("source_ticket", required=False)
 @click.option(
@@ -456,7 +456,7 @@ def merge_cmd(
     console.print(f"  Title: {final_title}")
 
 
-@cli.command("inspect")
+@cli.command("inspect", short_help="Dump raw API fields for one incident (debug).")
 @click.argument("incident_id")
 def inspect_cmd(incident_id: str):
     """Dump raw API fields for one incident (debug INC / linked records)."""
@@ -473,7 +473,7 @@ def inspect_cmd(incident_id: str):
 STATS_MAX_DAYS = 180
 
 
-@cli.command("stats")
+@cli.command("stats", short_help="Show history for one recurring alert.")
 @click.argument("ticket")
 @click.option(
     "--days",

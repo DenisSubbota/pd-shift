@@ -142,9 +142,24 @@ def test_strip_snow_refs_keeps_hostlike_short_digits():
     assert strip_snow_refs("MySQL Down - my-task5-host") == "MySQL Down - my-task5-host"
 
 
-def test_description_excludes_problem_ref():
+def test_list_description_keeps_problem_ref():
+    # The PRB in brackets is a human-added annotation; pd list must show it.
     title = "Disk Space Low - zephyr-db-01 ( PRB0044556 )"
-    assert description_from_title(title, "Zephyr Labs", None) == "Disk Space Low - zephyr-db-01"
+    assert description_from_title(title, "Zephyr Labs", None) == (
+        "Disk Space Low - zephyr-db-01 ( PRB0044556 )"
+    )
+
+
+def test_signature_excludes_problem_ref():
+    # The matching key drops the annotation so tagged/untagged alerts group.
+    title = "Disk Space Low - zephyr-db-01 ( PRB0044556 )"
+    _customer, signature = alert_signature(title, "Zephyr Labs")
+    assert signature == "Disk Space Low - zephyr-db-01"
+
+
+def test_list_description_unflagged_for_problem_ref():
+    # A PRB annotation alone must not make the row look like it needs a rename.
+    assert not display_title_differs_from_pd("Disk Space Low - zephyr-db-01 ( PRB0044556 )")
 
 
 def test_signature_matches_regardless_of_problem_ref():

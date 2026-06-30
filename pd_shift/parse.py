@@ -218,7 +218,9 @@ def host_from_title(title: str) -> str | None:
 
 def description_from_title(title: str, customer: str, host: str | None = None) -> str:
     del customer, host  # kept for call-site compatibility; host stays in description text
-    return strip_snow_refs(normalize_pmm_title(title)) or EMPTY
+    # SNOW refs (e.g. a human-added "( PRB0043110 )") are kept here so pd list
+    # shows them; they are stripped only for the stats matching key (alert_signature).
+    return normalize_pmm_title(title)
 
 
 def fixed_title_from_incident(title: str, service: str = "") -> str:
@@ -240,7 +242,7 @@ def alert_signature(title: str, service: str = "") -> tuple[str, str]:
     """Customer + normalized alert description used to match recurring incidents."""
     customer = customer_from_title(title, service)
     host = host_from_title(title)
-    signature = description_from_title(title, customer, host)
+    signature = strip_snow_refs(description_from_title(title, customer, host)) or EMPTY
     return customer, signature
 
 

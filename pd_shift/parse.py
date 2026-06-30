@@ -5,6 +5,16 @@ from pd_shift.console_io import EMPTY
 
 INC_RE = re.compile(r"INC\d+", re.IGNORECASE)
 CUSTOMER_RE = re.compile(r"\[([^\]]+)\]")
+# ServiceNow references that ride along in alert titles. They are noise in the
+# DESCRIPTION/signature: INC is the row's own ticket (resolved from metadata),
+# and PRB/CHG/TASK are unrelated record ids. >=4 digits so a real ref
+# (e.g. PRB0044556) matches but a hostlike token (e.g. "task5") does not.
+SNOW_REF_RE = re.compile(r"\b(?:INC|PRB|CHG|TASK)\d{4,}\b", re.IGNORECASE)
+SNOW_REF_BRACKETED_RE = re.compile(
+    r"[\(\[]\s*(?:INC|PRB|CHG|TASK)\d{4,}\s*[\)\]]",
+    re.IGNORECASE,
+)
+EMPTY_BRACKETS_RE = re.compile(r"[\(\[]\s*[\)\]]")
 HOST_RE = re.compile(
     r"\b("
     r"rds-aurora[-\w]+|"
@@ -76,14 +86,15 @@ def ticket_from_incident(*, metadata: dict | None, linked_records: list[dict]) -
     return ticket_from_metadata(metadata) or ticket_from_linked_records(linked_records)
 
 
+PERCONA_RULE_SUFFIX = r"(?:\s+Alerting Rule)?"
 PERCONA_ALERT_NOISE_RE = re.compile(
     r"^(?:Gascan\s*-\s*)?"
-    r"Percona_?MS_[A-Za-z0-9_]+\s*-\s*"
+    rf"Percona_?MS_[A-Za-z0-9_]+{PERCONA_RULE_SUFFIX}\s*-\s*"
     r"(?:CRITICAL|WARNING|WARN)\s*-\s*",
     re.IGNORECASE,
 )
 PERCONA_MS_BLOCK_ANYWHERE_RE = re.compile(
-    r"Percona_?MS_[A-Za-z0-9_]+\s*-\s*(?:CRITICAL|WARNING|WARN)\s*-\s*",
+    rf"Percona_?MS_[A-Za-z0-9_]+{PERCONA_RULE_SUFFIX}\s*-\s*(?:CRITICAL|WARNING|WARN)\s*-\s*",
     re.IGNORECASE,
 )
 GLUED_BEFORE_PERCONA_RE = re.compile(r"(?<=[\w.-])(Percona_?MS_)", re.IGNORECASE)
@@ -114,11 +125,20 @@ def normalize_title(title: str) -> str:
     return " ".join(title.split())
 
 
+def strip_snow_refs(text: str) -> str:
+    """Remove ServiceNow refs (INC/PRB/CHG/TASK) and any now-empty brackets."""
+    text = SNOW_REF_BRACKETED_RE.sub(" ", text)
+    text = SNOW_REF_RE.sub(" ", text)
+    text = EMPTY_BRACKETS_RE.sub(" ", text)
+    return re.sub(r"\s{2,}", " ", text).strip(" -|")
+
+
 def customer_from_title(title: str, service: str = "") -> str:
     title = normalize_title(title)
-    match = CUSTOMER_RE.search(title)
-    if match:
-        return clean_customer(match.group(1))
+    for match in CUSTOMER_RE.finditer(title):
+        # Skip a bracket that is only a SNOW ref (e.g. "[PRB0044556]").
+        if strip_snow_refs(match.group(1)):
+            return clean_customer(match.group(1))
     if service:
         return clean_customer(service.strip())
     return EMPTY
@@ -198,7 +218,7 @@ def host_from_title(title: str) -> str | None:
 
 def description_from_title(title: str, customer: str, host: str | None = None) -> str:
     del customer, host  # kept for call-site compatibility; host stays in description text
-    return normalize_pmm_title(title)
+    return strip_snow_refs(normalize_pmm_title(title)) or EMPTY
 
 
 def fixed_title_from_incident(title: str, service: str = "") -> str:
@@ -206,6 +226,14 @@ def fixed_title_from_incident(title: str, service: str = "") -> str:
     customer = customer_from_title(title, service)
     host = host_from_title(title)
     return description_from_title(title, customer, host)
+
+
+def display_title_differs_from_pd(title: str, service: str = "") -> bool:
+    """True when the cleaned DESCRIPTION column would not match the PD incident title."""
+    raw = normalize_title(title)
+    if not raw:
+        return False
+    return fixed_title_from_incident(title, service) != raw
 
 
 def alert_signature(title: str, service: str = "") -> tuple[str, str]:
@@ -217,9 +245,11 @@ def alert_signature(title: str, service: str = "") -> tuple[str, str]:
 
 
 def incident_matches_signature(incident: dict, customer: str, signature: str) -> bool:
+    """Match recurring alerts by normalized description (alert + host), not customer."""
+    del customer  # kept for call-site compatibility; stats groups by description only
     service = (incident.get("service") or {}).get("summary", "")
-    inc_customer, inc_signature = alert_signature(incident.get("title", ""), service)
-    return inc_customer == customer and inc_signature == signature
+    _inc_customer, inc_signature = alert_signature(incident.get("title", ""), service)
+    return inc_signature == signature
 
 
 def format_line(

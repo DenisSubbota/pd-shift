@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -10,8 +11,10 @@ import httpx
 
 from pd_shift.settings import config_value
 from pd_shift.parse import normalize_title, ticket_from_incident
+from pd_shift.stats import notes_from_log_entries
 
 OPEN_STATUSES = ("triggered", "acknowledged")
+OPEN_RESOLVABLE_STATUSES = OPEN_STATUSES
 
 
 def _resolve_reference_objects(refs: list[dict], payload: dict) -> list[dict]:
@@ -34,6 +37,17 @@ def _resolve_reference_objects(refs: list[dict], payload: dict) -> list[dict]:
         else:
             resolved.append(ref)
     return resolved
+
+
+def _ticket_context_from_payload(payload: dict) -> dict:
+    incident = payload.get("incident") or {}
+    refs = list(payload.get("external_references") or [])
+    incident_refs = incident.get("external_references") or []
+    resolved = refs if refs else _resolve_reference_objects(incident_refs, payload)
+    return {
+        "metadata": incident.get("metadata") or {},
+        "linked_records": resolved,
+    }
 
 
 class PDError(RuntimeError):
@@ -60,9 +74,10 @@ class PDClient:
             .strip()
             or None
         )
-        # One pooled, keep-alive client per PDClient. httpx.Client is thread-safe,
-        # so it is shared across the worker threads in the *_batch helpers below.
+        # One pooled client per PDClient. Requests are serialized with a lock because
+        # concurrent TLS handshakes on a shared httpx client can fail on some macOS builds.
         self._client = httpx.Client(timeout=30.0)
+        self._request_lock = threading.Lock()
         self._me_cache: dict | None = None
 
     def close(self) -> None:
@@ -95,9 +110,17 @@ class PDClient:
         url = f"{self.BASE}{path}"
         attempt = 0
         while True:
-            response = self._client.request(
-                method, url, headers=self._headers(write=write), **kwargs
-            )
+            try:
+                with self._request_lock:
+                    response = self._client.request(
+                        method, url, headers=self._headers(write=write), **kwargs
+                    )
+            except httpx.HTTPError as exc:
+                if attempt < self.MAX_RETRIES:
+                    time.sleep(float(2 ** attempt))
+                    attempt += 1
+                    continue
+                raise PDError(f"PagerDuty connection failed: {exc}") from exc
             # Retry on rate limits (429) and transient server errors (5xx).
             if (response.status_code == 429 or response.status_code >= 500) and attempt < self.MAX_RETRIES:
                 time.sleep(self._retry_delay(response, attempt))
@@ -338,14 +361,20 @@ class PDClient:
             incident_id,
             includes=["external_references", "metadata"],
         )
-        incident = payload.get("incident") or {}
-        refs = list(payload.get("external_references") or [])
-        incident_refs = incident.get("external_references") or []
-        resolved = refs if refs else _resolve_reference_objects(incident_refs, payload)
-        return {
-            "metadata": incident.get("metadata") or {},
-            "linked_records": resolved,
-        }
+        return _ticket_context_from_payload(payload)
+
+    def incident_details(self, incident_id: str, *, include_notes: bool = False) -> dict:
+        includes = ["external_references", "metadata"]
+        if include_notes:
+            includes.append("notes")
+        payload = self.get_incident(incident_id, includes=includes)
+        details = _ticket_context_from_payload(payload)
+        if include_notes:
+            notes = list(payload.get("notes") or [])
+            log_entries = self.incident_log_entries(incident_id, limit=50)
+            notes.extend(notes_from_log_entries(log_entries))
+            details["notes"] = notes
+        return details
 
     def incident_linked_records(self, incident_id: str) -> list[dict]:
         return self.incident_ticket_context(incident_id)["linked_records"]
@@ -357,6 +386,16 @@ class PDClient:
         on_progress: Callable[[int, int], None] | None = None,
     ) -> dict[str, dict]:
         """Fetch ticket context for many incidents in parallel (N+1, pooled)."""
+        return self.incident_details_batch(incident_ids, include_notes=False, on_progress=on_progress)
+
+    def incident_details_batch(
+        self,
+        incident_ids: list[str],
+        *,
+        include_notes: bool = False,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> dict[str, dict]:
+        """Fetch ticket context (and optionally notes) for many incidents in parallel."""
         results: dict[str, dict] = {}
         total = len(incident_ids)
         if total == 0:
@@ -365,7 +404,7 @@ class PDClient:
         done = 0
         with ThreadPoolExecutor(max_workers=min(self.MAX_WORKERS, total)) as pool:
             futures = {
-                pool.submit(self.incident_ticket_context, incident_id): incident_id
+                pool.submit(self.incident_details, incident_id, include_notes=include_notes): incident_id
                 for incident_id in incident_ids
             }
             for future in as_completed(futures):
@@ -407,7 +446,7 @@ class PDClient:
         includes = ["external_references", "metadata", "custom_fields", "notes"]
         incident_payload = self.get_incident(incident_id, includes=includes)
         incident = incident_payload.get("incident") or {}
-        context = self.incident_ticket_context(incident.get("id") or incident_id)
+        context = _ticket_context_from_payload(incident_payload)
         return {
             "query_id": incident_id,
             "incident_number": incident.get("incident_number"),
@@ -475,6 +514,32 @@ class PDClient:
         }
         self._request("PUT", "/incidents", write=True, json=body)
 
+    def add_incident_note(self, incident_id: str, content: str) -> None:
+        content = content.strip()
+        if not content:
+            return
+        self._prepare_write()
+        body = {"note": {"content": content}}
+        self._request("POST", f"/incidents/{incident_id}/notes", write=True, json=body)
+
+    def resolve_incident(self, incident_id: str, *, note: str | None = None) -> None:
+        self.resolve_incidents([incident_id])
+        if note:
+            self.add_incident_note(incident_id, note)
+
+    def resolve_incidents(self, incident_ids: list[str]) -> None:
+        if not incident_ids:
+            return
+        self._prepare_write()
+
+        body = {
+            "incidents": [
+                {"id": incident_id, "type": "incident_reference", "status": "resolved"}
+                for incident_id in incident_ids
+            ]
+        }
+        self._request("PUT", "/incidents", write=True, json=body)
+
     def merge_incidents(self, parent_id: str, source_ids: list[str]) -> None:
         if not source_ids:
             return
@@ -508,9 +573,8 @@ class PDClient:
 
         ref_upper = ref.upper()
         if ref_upper.startswith("INC"):
-            contexts = self.incident_ticket_contexts([inc["id"] for inc in incidents])
             for incident in incidents:
-                context = contexts.get(incident["id"], {})
+                context = self.incident_ticket_context(incident["id"])
                 ticket = ticket_from_incident(
                     metadata=context.get("metadata"),
                     linked_records=context.get("linked_records", []),

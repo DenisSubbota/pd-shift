@@ -1,9 +1,13 @@
 from pd_shift.parse import (
+    alert_signature,
     customer_from_title,
     description_from_title,
+    display_title_differs_from_pd,
     fixed_title_from_incident,
     format_line,
     host_from_title,
+    incident_matches_signature,
+    strip_snow_refs,
     ticket_from_incident,
     ticket_from_linked_records,
     ticket_from_metadata,
@@ -105,3 +109,67 @@ def test_pmm_glued_mysql_readonly_title():
 
 def test_normal_percona_title_not_flagged_for_rename():
     assert not title_has_pmm_merge_pattern(SAMPLE_TITLE)
+
+
+def test_display_differs_when_percona_noise_in_pd_title():
+    assert display_title_differs_from_pd(SAMPLE_TITLE)
+    assert not display_title_differs_from_pd("Disk Space Low - zephyr-db-01")
+
+
+def test_display_differs_for_pmm_glued_title():
+    assert display_title_differs_from_pd(PROXYSQL_GLUED)
+
+
+MYSQL_HISTORY_LENGTH = (
+    "Percona_MS_MySQLHistoryLength_HighThr Alerting Rule - CRITICAL - "
+    "MySQL InnoDB History List Length - db-01-mysql"
+)
+
+
+def test_strip_snow_refs_removes_bracketed_problem():
+    assert (
+        strip_snow_refs("Disk Space Low - zephyr-db-01 ( PRB0044556 )")
+        == "Disk Space Low - zephyr-db-01"
+    )
+
+
+def test_strip_snow_refs_removes_all_types_and_bare_tokens():
+    assert strip_snow_refs("Foo INC0011223 bar [CHG0011223] baz TASK0011223") == "Foo bar baz"
+
+
+def test_strip_snow_refs_keeps_hostlike_short_digits():
+    # "task5" is not a SNOW ref (needs >=4 digits) and must survive.
+    assert strip_snow_refs("MySQL Down - my-task5-host") == "MySQL Down - my-task5-host"
+
+
+def test_description_excludes_problem_ref():
+    title = "Disk Space Low - zephyr-db-01 ( PRB0044556 )"
+    assert description_from_title(title, "Zephyr Labs", None) == "Disk Space Low - zephyr-db-01"
+
+
+def test_signature_matches_regardless_of_problem_ref():
+    service = "Zephyr Labs"
+    tagged = {
+        "title": "Disk Space Low - zephyr-db-01 ( PRB0044556 )",
+        "service": {"summary": service},
+    }
+    untagged_title = "Disk Space Low - zephyr-db-01"
+    customer, signature = alert_signature(untagged_title, service)
+    assert incident_matches_signature(tagged, customer, signature)
+
+
+def test_customer_skips_problem_only_bracket():
+    title = "Disk Space Low - zephyr-db-01 [PRB0044556]"
+    assert customer_from_title(title, "Zephyr Labs") == "Zephyr Labs"
+
+
+def test_alerting_rule_title_strips_for_stats_match():
+    service = "Acme Corp - Gascan"
+    clean = "MySQL InnoDB History List Length - db-01-mysql"
+    assert description_from_title(MYSQL_HISTORY_LENGTH, service, None) == clean
+    ref_customer, ref_signature = alert_signature(clean, service)
+    incident = {
+        "title": MYSQL_HISTORY_LENGTH,
+        "service": {"summary": service},
+    }
+    assert incident_matches_signature(incident, ref_customer, ref_signature)

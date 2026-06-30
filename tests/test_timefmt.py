@@ -29,12 +29,33 @@ def test_format_duration_resolved():
     assert format_duration("2026-06-27T08:00:00Z", "2026-06-27T10:30:00Z") == "2h 30m"
 
 
+def test_format_duration_one_minute_when_timestamps_differ():
+    assert format_duration("2026-05-30T19:24:50Z", "2026-05-30T19:25:10Z") == "1m"
+
+
 def test_format_duration_open():
     now = datetime(2026, 6, 29, 12, 0, tzinfo=timezone.utc)
     assert (
         format_duration("2026-06-29T08:00:00Z", None, now=now)
         == "open (4h)"
     )
+
+
+def test_format_duration_sub_minute_resolved_is_lt_1m():
+    # A resolved incident that lasted under a minute is a duration, not a
+    # relative time: it should read "<1m", never "just now".
+    assert format_duration("2026-06-05T08:32:00Z", "2026-06-05T08:32:30Z") == "<1m"
+
+
+def test_format_duration_sub_minute_open_is_lt_1m():
+    now = datetime(2026, 6, 29, 12, 0, 30, tzinfo=timezone.utc)
+    assert format_duration("2026-06-29T12:00:00Z", None, now=now) == "open (<1m)"
+
+
+def test_format_trigger_time_just_now_unchanged():
+    # "Last seen" is a relative time, so "just now" remains correct there.
+    now = datetime(2026, 6, 29, 12, 0, 30, tzinfo=timezone.utc)
+    assert format_trigger_time("2026-06-29T12:00:00Z", now=now) == "just now"
 
 
 def test_parse_pd_timestamp_zulu():

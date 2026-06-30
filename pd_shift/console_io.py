@@ -6,6 +6,10 @@ from rich.console import Console
 
 EMPTY = "-"
 
+# Single source of truth for the project's green accent (stats times,
+# typical-fire window, and success messages).
+GREEN_STYLE = "spring_green1"
+
 
 def ensure_utf8_stdio() -> None:
     """Avoid UnicodeEncodeError when locale encoding is iso8859-* (common on macOS)."""

@@ -64,7 +64,7 @@ def format_duration(
     started = parse_pd_timestamp(start)
     if end:
         ended = parse_pd_timestamp(end)
-        delta = ended - started
+        delta = _resolved_duration_delta(started, ended)
         if delta.total_seconds() < 0:
             return EMPTY
         return _format_timedelta(delta)
@@ -79,6 +79,13 @@ def format_duration(
     return f"open ({open_for})"
 
 
+def _resolved_duration_delta(started: datetime, ended: datetime) -> timedelta:
+    """Match displayed UTC minute timestamps so 19:24 -> 19:25 shows as 1m."""
+    start_utc = started.astimezone(timezone.utc).replace(second=0, microsecond=0)
+    end_utc = ended.astimezone(timezone.utc).replace(second=0, microsecond=0)
+    return end_utc - start_utc
+
+
 def format_timedelta_duration(delta: timedelta) -> str:
     if delta.total_seconds() < 0:
         return EMPTY
@@ -88,7 +95,7 @@ def format_timedelta_duration(delta: timedelta) -> str:
 def _format_timedelta(delta: timedelta) -> str:
     total_minutes = int(delta.total_seconds()) // 60
     if total_minutes < 1:
-        return "just now"
+        return "<1m"
 
     days, remainder = divmod(total_minutes, 24 * 60)
     hours, minutes = divmod(remainder, 60)
@@ -99,4 +106,4 @@ def _format_timedelta(delta: timedelta) -> str:
         parts.append(f"{hours}h")
     if minutes and not days:
         parts.append(f"{minutes}m")
-    return " ".join(parts) if parts else "just now"
+    return " ".join(parts) if parts else "<1m"

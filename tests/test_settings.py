@@ -1,6 +1,4 @@
-from pathlib import Path
-
-from pd_shift.settings import CONFIG_FILE, load_config
+from pd_shift.settings import load_config
 
 
 def test_load_config_from_conf(tmp_path, monkeypatch):

@@ -4,11 +4,12 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+import click
 from rich.console import Console
 from rich.text import Text
 
 from pd_shift.htmltext import html_to_plain
-from pd_shift.console_io import EMPTY
+from pd_shift.console_io import EMPTY, GREEN_STYLE
 from pd_shift.parse import ticket_from_incident
 from pd_shift.timefmt import (
     format_duration,
@@ -19,9 +20,24 @@ from pd_shift.timefmt import (
 )
 
 SERVICENOW_URL_RE = re.compile(r"https://percona\.service-now\.com/\S*", re.IGNORECASE)
+SERVICENOW_NOTE_PREFIX_RE = re.compile(
+    r"^\(from ServiceNow:[^)]+\)\s*(\[code\])?\s*",
+    re.IGNORECASE,
+)
+PRB_RE = re.compile(r"PRB\d+", re.IGNORECASE)
 SEPARATOR = " - "
 STATS_WINDOW_DAYS = 60
 FIRE_WINDOW_HOURS = 3
+# A tight single-minute cluster is the fingerprint of a scheduled trigger
+# (cron, backup window, batch job) rather than organic load.
+PEAK_TOLERANCE_MIN = 5
+PEAK_MIN_SHARE = 0.40
+PEAK_MIN_COUNT = 3
+STATS_DATE_STYLE = "bold cyan"
+STATS_TIME_STYLE = GREEN_STYLE
+STATS_HEADER_STYLE = "dim"
+ATYPICAL_TAG_STYLE = "yellow"
+ATYPICAL_FIRE_SUFFIX = " - atypical"
 
 
 def stats_alert_label(customer: str, signature: str) -> str:
@@ -35,9 +51,15 @@ def print_inc_not_open_hint(console: Console, ticket: str) -> None:
         "[bold]Incidents -> Incident #123456[/bold]"
     )
     console.print("Then run:  [cyan]pd stats 123456[/cyan]")
-    console.print(
-        "Slow INC search (many API calls):  "
-        f"[dim]pd stats {ticket} --yes[/dim]"
+
+
+def prompt_inc_history_search(console: Console, ticket: str) -> bool:
+    """Ask whether to run the slow team-history INC lookup."""
+    print_inc_not_open_hint(console, ticket)
+    console.print()
+    return click.confirm(
+        "Search team history by INC? (slow, many API calls)",
+        default=False,
     )
 
 
@@ -51,6 +73,7 @@ class StatsRow:
     is_resolved: bool
     duration_delta: timedelta | None
     notes: list[str]
+    problem_candidates: list[str]
 
 
 @dataclass
@@ -61,12 +84,18 @@ class StatsSummary:
     resolved_count: int
     fire_range: str
     fire_count: int
+    fire_start_hour: int
+    fire_window_hours: int
     last_seen: str
     current: str
+    problem_candidates: list[str]
+    peak_time: str | None = None
+    peak_count: int = 0
 
 
 def clean_note(content: str) -> str | None:
     text = html_to_plain(content)
+    text = SERVICENOW_NOTE_PREFIX_RE.sub("", text)
     text = SERVICENOW_URL_RE.sub("", text)
     text = re.sub(r"[ \t]+", " ", text)
     lines = [line.strip(" -|") for line in text.split("\n")]
@@ -78,7 +107,7 @@ def clean_note(content: str) -> str | None:
 def collect_notes(raw_notes: list[dict]) -> list[str]:
     seen: set[str] = set()
     cleaned: list[str] = []
-    for note in raw_notes:
+    for note in _sort_notes_newest_first(raw_notes):
         content = clean_note(str(note.get("content") or ""))
         if not content or content in seen:
             continue
@@ -87,14 +116,75 @@ def collect_notes(raw_notes: list[dict]) -> list[str]:
     return cleaned
 
 
+def notes_from_log_entries(log_entries: list[dict]) -> list[dict]:
+    """ServiceNow notes often appear only as annotate_log_entry channel notes."""
+    notes: list[dict] = []
+    for entry in log_entries:
+        if entry.get("type") != "annotate_log_entry":
+            continue
+        channel = entry.get("channel") or {}
+        if channel.get("type") != "note":
+            continue
+        content = str(channel.get("summary") or "").strip()
+        if not content:
+            continue
+        notes.append(
+            {
+                "content": content,
+                "created_at": entry.get("created_at"),
+            }
+        )
+    return notes
+
+
+def collect_prb_candidates(raw_notes: list[dict]) -> list[str]:
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for note in _sort_notes_newest_first(raw_notes):
+        content = str(note.get("content") or "")
+        for match in PRB_RE.findall(content):
+            prb = match.upper()
+            if prb in seen:
+                continue
+            seen.add(prb)
+            candidates.append(prb)
+    return candidates
+
+
+def _sort_notes_newest_first(raw_notes: list[dict]) -> list[dict]:
+    def sort_key(note: dict) -> datetime:
+        created_at = note.get("created_at")
+        if not created_at:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        return parse_pd_timestamp(str(created_at)).astimezone(timezone.utc)
+
+    return sorted(raw_notes, key=sort_key, reverse=True)
+
+
+def aggregate_problem_candidates(rows: list[StatsRow]) -> list[str]:
+    seen: set[str] = set()
+    aggregated: list[str] = []
+    for row in rows:
+        for prb in row.problem_candidates:
+            if prb in seen:
+                continue
+            seen.add(prb)
+            aggregated.append(prb)
+    return aggregated
+
+
 def _format_fire_range(start_hour: int, window_hours: int) -> str:
     end_hour = (start_hour + window_hours) % 24
     return f"{start_hour:02d}:00–{end_hour:02d}:00 UTC"
 
 
-def typical_fire(created_times: list[datetime], *, window_hours: int = FIRE_WINDOW_HOURS) -> tuple[str, int]:
+def typical_fire(
+    created_times: list[datetime],
+    *,
+    window_hours: int = FIRE_WINDOW_HOURS,
+) -> tuple[str, int, int]:
     if not created_times:
-        return EMPTY, 0
+        return EMPTY, 0, 0
 
     counts = [0] * 24
     for created in created_times:
@@ -110,7 +200,63 @@ def typical_fire(created_times: list[datetime], *, window_hours: int = FIRE_WIND
         elif count == best_count and counts[start] > counts[best_start]:
             best_start = start
 
-    return _format_fire_range(best_start, window_hours), best_count
+    return _format_fire_range(best_start, window_hours), best_count, best_start
+
+
+def dominant_fire_minute(
+    created_times: list[datetime],
+    *,
+    tolerance_min: int = PEAK_TOLERANCE_MIN,
+    min_share: float = PEAK_MIN_SHARE,
+    min_count: int = PEAK_MIN_COUNT,
+) -> tuple[str, int] | None:
+    """Detect a precise recurring clock minute (a scheduled-trigger signal).
+
+    Returns ("HH:MM", count) for the tightest ``+-tolerance_min`` cluster when
+    it holds at least ``min_count`` incidents and ``min_share`` of the total;
+    otherwise None. No midnight wraparound: a cluster straddling 23:59->00:01
+    is not merged.
+    """
+    total = len(created_times)
+    if not total:
+        return None
+
+    minutes = [t.astimezone(timezone.utc).hour * 60 + t.minute for t in created_times]
+    exact_counts: dict[int, int] = {}
+    for minute in minutes:
+        exact_counts[minute] = exact_counts.get(minute, 0) + 1
+
+    best_center = None
+    best_window = 0
+    # Tie-break: prefer the more populated exact minute, then the earlier one.
+    for center in sorted(exact_counts):
+        window = sum(
+            count
+            for minute, count in exact_counts.items()
+            if abs(minute - center) <= tolerance_min
+        )
+        if window > best_window or (
+            window == best_window
+            and best_center is not None
+            and exact_counts[center] > exact_counts[best_center]
+        ):
+            best_window = window
+            best_center = center
+
+    if best_center is None or best_window < min_count or best_window / total < min_share:
+        return None
+
+    return f"{best_center // 60:02d}:{best_center % 60:02d}", best_window
+
+
+def is_typical_fire_time(
+    created_at: datetime,
+    *,
+    start_hour: int,
+    window_hours: int = FIRE_WINDOW_HOURS,
+) -> bool:
+    hour = created_at.astimezone(timezone.utc).hour
+    return any(hour == (start_hour + offset) % 24 for offset in range(window_hours))
 
 
 def _duration_delta(created_at: str | None, resolved_at: str | None, *, now: datetime) -> timedelta | None:
@@ -129,7 +275,6 @@ def build_stats_rows(
     incidents: list[dict],
     *,
     contexts: dict[str, dict],
-    notes_by_id: dict[str, list[dict]] | None = None,
     now: datetime | None = None,
 ) -> list[StatsRow]:
     current = now or datetime.now(timezone.utc)
@@ -150,6 +295,7 @@ def build_stats_rows(
         resolved_at = incident.get("resolved_at")
         is_resolved = bool(resolved_at)
         duration_delta = _duration_delta(created_at, resolved_at, now=current)
+        raw_notes = context.get("notes", []) if "notes" in context else []
         rows.append(
             StatsRow(
                 ticket=ticket_label,
@@ -159,11 +305,12 @@ def build_stats_rows(
                 created_at=parse_pd_timestamp(created_at) if created_at else datetime.min.replace(tzinfo=timezone.utc),
                 is_resolved=is_resolved,
                 duration_delta=duration_delta,
-                notes=collect_notes(notes_by_id.get(incident_id, [])) if notes_by_id else [],
+                notes=collect_notes(raw_notes) if "notes" in context else [],
+                problem_candidates=collect_prb_candidates(raw_notes) if "notes" in context else [],
             )
         )
 
-    rows.sort(key=lambda row: row.created_at, reverse=True)
+    rows.sort(key=lambda row: row.created_at)
     return rows
 
 
@@ -190,9 +337,11 @@ def summarize_stats(
         avg_duration = EMPTY
 
     created_times = [row.created_at for row in rows]
-    fire_range, fire_count = typical_fire(created_times)
+    fire_range, fire_count, fire_start_hour = typical_fire(created_times)
+    peak = dominant_fire_minute(created_times)
+    newest = max(row.created_at for row in rows) if rows else None
     last_seen = format_trigger_time(
-        rows[0].created_at.isoformat() if rows else None,
+        newest.isoformat() if newest else None,
         now=current,
     )
 
@@ -211,8 +360,13 @@ def summarize_stats(
         resolved_count=resolved_count,
         fire_range=fire_range,
         fire_count=fire_count,
+        fire_start_hour=fire_start_hour,
+        fire_window_hours=FIRE_WINDOW_HOURS,
         last_seen=last_seen,
         current=current_line,
+        problem_candidates=aggregate_problem_candidates(rows),
+        peak_time=peak[0] if peak else None,
+        peak_count=peak[1] if peak else 0,
     )
 
 
@@ -232,6 +386,39 @@ def _print_note_line(console: Console, line: str, *, first: bool) -> None:
     else:
         text = Text(f"         {line}")
     console.print(text)
+
+
+def _append_stats_timestamp(line: Text, value: str, width: int) -> None:
+    if value == EMPTY or " UTC" not in value:
+        line.append(value.ljust(width))
+        return
+    date_part, time_part = value.split(" ", 1)
+    line.append(date_part, style=STATS_DATE_STYLE)
+    line.append(" ")
+    line.append(time_part, style=STATS_TIME_STYLE)
+    if len(value) < width:
+        line.append(" " * (width - len(value)))
+
+
+def _format_stats_row_line(
+    row: StatsRow,
+    *,
+    ticket_w: int,
+    started_w: int,
+    resolved_w: int,
+    duration_w: int,
+    atypical: bool,
+) -> Text:
+    line = Text()
+    line.append(f"{row.ticket.ljust(ticket_w)}{SEPARATOR}")
+    _append_stats_timestamp(line, row.started, started_w)
+    line.append(SEPARATOR)
+    _append_stats_timestamp(line, row.resolved, resolved_w)
+    line.append(SEPARATOR)
+    line.append(row.duration.ljust(duration_w))
+    if atypical:
+        line.append(ATYPICAL_FIRE_SUFFIX, style=ATYPICAL_TAG_STYLE)
+    return line
 
 
 def render_stats(
@@ -260,14 +447,21 @@ def render_stats(
         f"{'RESOLVED'.ljust(resolved_w)}{gap}"
         f"{'DURATION'.ljust(duration_w)}"
     )
-    console.print(header, style="dim")
+    console.print(header, style=STATS_HEADER_STYLE)
 
     for row in rows:
-        line = (
-            f"{row.ticket.ljust(ticket_w)}{SEPARATOR}"
-            f"{row.started.ljust(started_w)}{SEPARATOR}"
-            f"{row.resolved.ljust(resolved_w)}{SEPARATOR}"
-            f"{row.duration.ljust(duration_w)}"
+        atypical = not is_typical_fire_time(
+            row.created_at,
+            start_hour=summary.fire_start_hour,
+            window_hours=summary.fire_window_hours,
+        )
+        line = _format_stats_row_line(
+            row,
+            ticket_w=ticket_w,
+            started_w=started_w,
+            resolved_w=resolved_w,
+            duration_w=duration_w,
+            atypical=atypical,
         )
         console.print(line)
         if show_notes and row.notes:
@@ -284,10 +478,18 @@ def render_stats(
     else:
         console.print(f"Avg duration:   {EMPTY}  (0 resolved)")
     if summary.count:
-        console.print(
-            f"Typical fire:   {summary.fire_range}  ({summary.fire_count}/{summary.count})"
-        )
+        typical_fire = Text()
+        typical_fire.append("Typical fire:   ")
+        typical_fire.append(summary.fire_range, style=STATS_TIME_STYLE)
+        typical_fire.append(f"  ({summary.fire_count}/{summary.count})")
+        if summary.peak_time:
+            typical_fire.append(" — peak ")
+            typical_fire.append(summary.peak_time, style=STATS_TIME_STYLE)
+            typical_fire.append(f" ({summary.peak_count}/{summary.count})")
+        console.print(typical_fire)
     else:
         console.print(f"Typical fire:   {EMPTY}")
     console.print(f"Last seen:      {summary.last_seen}")
     console.print(f"Current:        {summary.current}")
+    if summary.problem_candidates:
+        console.print(f"Problem candidate:  {', '.join(summary.problem_candidates)}")

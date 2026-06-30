@@ -6,9 +6,9 @@ from collections.abc import Callable
 
 import click
 
-from pd_shift.console_io import make_console
+from pd_shift.console_io import GREEN_STYLE, make_console
 
-from pd_shift.client import PDClient, PDError
+from pd_shift.client import OPEN_RESOLVABLE_STATUSES, PDClient, PDError
 from pd_shift.display import incident_row_from, render_incident_table, sort_incident_rows
 from pd_shift.merge import (
     choose_merge_title,
@@ -21,9 +21,9 @@ from pd_shift.merge import (
 from pd_shift.parse import (
     alert_signature,
     fixed_title_from_incident,
+    format_line,
     incident_matches_signature,
     normalize_title,
-    title_has_pmm_merge_pattern,
 )
 from pd_shift.progress import ProgressLine
 from pd_shift.settings import config_path, config_value
@@ -31,6 +31,7 @@ from pd_shift.stats import (
     STATS_WINDOW_DAYS,
     build_stats_rows,
     print_inc_not_open_hint,
+    prompt_inc_history_search,
     render_stats,
     stats_alert_label,
     summarize_stats,
@@ -73,14 +74,24 @@ def _ticket_context_for_incidents(
     )
 
 
-def _print_acked_incidents(client: PDClient, incidents: list[dict]) -> None:
+def _format_incident_summary(incident: dict, context: dict) -> str:
+    return format_line(
+        ticket=incident_ticket_label(incident, context),
+        customer=incident_customer(incident),
+        description=incident_display_title(incident),
+    )
+
+
+def _print_incident_results(client: PDClient, incidents: list[dict], *, verb: str) -> None:
     contexts = _ticket_context_for_incidents(client, incidents)
-    console.print(f"[green]Acked {len(incidents)} incident(s):[/green]")
+    console.print(f"{verb} {len(incidents)} incident(s):", style=GREEN_STYLE)
     for incident in incidents:
         context = contexts.get(incident["id"], {})
-        label = incident_ticket_label(incident, context)
-        description = incident_display_title(incident)
-        console.print(f"  {label}  -  {description}")
+        console.print(f"  {_format_incident_summary(incident, context)}")
+
+
+def _print_acked_incidents(client: PDClient, incidents: list[dict]) -> None:
+    _print_incident_results(client, incidents, verb="Acked")
 
 
 def _warn_if_unscoped(mine: bool, team: tuple[str, ...]) -> None:
@@ -93,7 +104,7 @@ def _warn_if_unscoped(mine: bool, team: tuple[str, ...]) -> None:
 @click.group()
 @click.version_option(package_name="pd_shift")
 def cli():
-    """PagerDuty shift helper — list open alerts and ack triggered ones."""
+    """PagerDuty shift helper — list open alerts, ack, and resolve."""
 
 
 @cli.command("config-path")
@@ -154,18 +165,6 @@ def list_cmd(mine: bool, team: tuple[str, ...], show_time: bool):
 
     render_incident_table(console, sort_incident_rows(rows, by_time=show_time), show_time=show_time)
 
-    rename_hints: list[str] = []
-    for incident, row in zip(incidents, rows):
-        if not title_has_pmm_merge_pattern(incident.get("title", "")):
-            continue
-        label = row.ticket if row.has_ticket else incident_ticket_label(
-            incident, context_by_id.get(incident["id"], {})
-        )
-        rename_hints.append(f"pd rename {label}")
-
-    if rename_hints:
-        console.print(f"[dim]PMM merged title — fix: {', '.join(rename_hints)}[/dim]")
-
 
 @cli.command("ack")
 @click.argument("ticket", required=False)
@@ -213,9 +212,7 @@ def ack_cmd(ticket: str | None, mine: bool, team: tuple[str, ...], dry_run: bool
         contexts = _ticket_context_for_incidents(client, to_ack)
         for incident in to_ack:
             context = contexts.get(incident["id"], {})
-            label = incident_ticket_label(incident, context)
-            description = incident_display_title(incident)
-            console.print(f"  {label}  -  {description}")
+            console.print(f"  {_format_incident_summary(incident, context)}")
         return
 
     try:
@@ -225,6 +222,61 @@ def ack_cmd(ticket: str | None, mine: bool, team: tuple[str, ...], dry_run: bool
         sys.exit(1)
 
     _print_acked_incidents(client, to_ack)
+
+
+@cli.command("resolve")
+@click.argument("ticket")
+@click.option("-m", "--message", default=None, help="Resolution note added to the incident.")
+@click.option("--dry-run", is_flag=True, help="Print what would be resolved without calling PD.")
+def resolve_cmd(ticket: str, message: str | None, dry_run: bool):
+    """Resolve one triggered or acknowledged incident by ServiceNow INC ticket."""
+    ticket = ticket.strip().upper()
+    if not ticket.startswith("INC"):
+        console.print("[red]error:[/red] resolve requires a ServiceNow INC ticket (e.g. INC0011223)")
+        sys.exit(1)
+
+    _warn_if_unscoped(mine=False, team=())
+    try:
+        client = PDClient()
+        incidents = _load_incidents(client, mine=False, team=())
+    except PDError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        sys.exit(1)
+
+    incident = client.resolve_incident_reference(ticket, incidents)
+    if not incident:
+        console.print(
+            f"[red]error:[/red] no triggered/acknowledged incident found for {ticket}"
+        )
+        sys.exit(1)
+
+    status = incident.get("status", "unknown")
+    if status not in OPEN_RESOLVABLE_STATUSES:
+        console.print(
+            f"[red]error:[/red] {ticket} is {status} — only triggered/acknowledged incidents can be resolved"
+        )
+        sys.exit(1)
+
+    context = client.incident_ticket_context(incident["id"])
+    summary = _format_incident_summary(incident, context)
+
+    if dry_run:
+        console.print("[yellow]dry-run:[/yellow] would resolve:")
+        console.print(f"  {summary}")
+        if message and message.strip():
+            console.print(f"  note: {message.strip()}")
+        return
+
+    try:
+        client.resolve_incident(incident["id"], note=message)
+    except PDError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        sys.exit(1)
+
+    console.print("Resolved 1 incident:", style=GREEN_STYLE)
+    console.print(f"  {summary}")
+    if message and message.strip():
+        console.print(f"  note: {message.strip()}")
 
 
 @cli.command("rename")
@@ -295,7 +347,7 @@ def rename_cmd(
         console.print(f"[red]error:[/red] {exc}")
         sys.exit(1)
 
-    console.print(f"[green]Renamed {ticket}.[/green]")
+    console.print(f"Renamed {ticket}.", style=GREEN_STYLE)
     console.print(f"  {new_title}")
 
 
@@ -400,7 +452,7 @@ def merge_cmd(
         console.print(f"[red]error:[/red] {exc}")
         sys.exit(1)
 
-    console.print(f"[green]Merged {source_label} into {parent_label}[/green]")
+    console.print(f"Merged {source_label} into {parent_label}", style=GREEN_STYLE)
     console.print(f"  Title: {final_title}")
 
 
@@ -450,7 +502,7 @@ STATS_MAX_DAYS = 180
     "-y",
     "--yes",
     is_flag=True,
-    help="Allow slow team-history search by INC when the alert is not open.",
+    help="Skip confirmation and search team history by INC when the alert is not open.",
 )
 def stats_cmd(
     ticket: str,
@@ -478,8 +530,15 @@ def stats_cmd(
         reference = client.resolve_incident_reference(ticket, open_incidents)
         if not reference and ticket.strip().upper().startswith("INC") and not yes:
             progress.done()
-            print_inc_not_open_hint(console, ticket.strip().upper())
-            sys.exit(1)
+            ticket_upper = ticket.strip().upper()
+            if sys.stdin.isatty() and sys.stdout.isatty():
+                yes = prompt_inc_history_search(console, ticket_upper)
+                if not yes:
+                    sys.exit(0)
+            else:
+                print_inc_not_open_hint(console, ticket_upper)
+                console.print("[dim]Non-interactive: use --yes to search team history.[/dim]")
+                sys.exit(1)
 
         if not reference:
             reference = client.resolve_reference_in_team_history(
@@ -522,25 +581,23 @@ def stats_cmd(
             if incident_matches_signature(incident, customer, signature)
         ]
 
-        def on_metadata(done: int, total: int) -> None:
-            progress.update(f"{alert_label}: loading INC metadata... {done}/{total}")
+        def on_details(done: int, total: int) -> None:
+            progress.update(f"{alert_label}: loading incident details... {done}/{total}")
 
-        contexts = _ticket_context_for_incidents(client, matched, on_progress=on_metadata)
-        ref_context = contexts.get(reference["id"]) or client.incident_ticket_context(reference["id"])
+        matched_ids = [incident["id"] for incident in matched]
+        contexts = client.incident_details_batch(
+            matched_ids,
+            include_notes=True,
+            on_progress=on_details,
+        )
+        ref_context = contexts.get(reference["id"]) or client.incident_details(
+            reference["id"], include_notes=True
+        )
         reference_label = incident_ticket_label(reference, ref_context)
-
-        notes_by_id: dict[str, list[dict]] | None = None
-        if show_notes:
-            def on_notes(done: int, total: int) -> None:
-                progress.update(f"{alert_label}: fetching notes... {done}/{total}")
-
-            notes_by_id = client.incident_notes_batch(
-                [incident["id"] for incident in matched], on_progress=on_notes
-            )
 
         progress.done()
 
-        rows = build_stats_rows(matched, contexts=contexts, notes_by_id=notes_by_id)
+        rows = build_stats_rows(matched, contexts=contexts)
         summary = summarize_stats(rows, reference_incident=reference, window_days=days)
         render_stats(
             console,

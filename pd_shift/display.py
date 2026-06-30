@@ -7,6 +7,7 @@ from rich.text import Text
 from pd_shift.parse import (
     customer_from_title,
     description_from_title,
+    display_title_differs_from_pd,
     host_from_title,
     ticket_from_incident,
 )
@@ -19,6 +20,20 @@ MISSING_TICKET = EMPTY
 SEPARATOR = " - "
 
 
+PD_SYNC_HINT = (
+    "Description with underlined where it differs from PD — pd rename <INC> to sync"
+)
+
+
+def _print_sync_hint(console: Console) -> None:
+    hint = Text()
+    hint.append("Description with ", style="dim")
+    hint.append("underlined", style="underline")
+    hint.append(" where it differs from PD — pd rename <INC> to sync", style="dim")
+    console.print()
+    console.print(hint)
+
+
 @dataclass
 class IncidentRow:
     ticket: str
@@ -27,6 +42,7 @@ class IncidentRow:
     status: str
     triggered: str = EMPTY
     triggered_at: datetime | None = None
+    description_differs_from_pd: bool = False
 
     @property
     def has_ticket(self) -> bool:
@@ -60,6 +76,7 @@ def incident_row_from(
         status=status,
         triggered=format_trigger_time(created_at),
         triggered_at=triggered_at,
+        description_differs_from_pd=display_title_differs_from_pd(title, service),
     )
 
 
@@ -113,6 +130,41 @@ def format_aligned_row(
     return line
 
 
+def _description_style(*, status: str, differs_from_pd: bool) -> str:
+    base = _status_style(status)
+    if differs_from_pd:
+        return f"{base} underline"
+    return base
+
+
+def _render_row_text(
+    row: IncidentRow,
+    ticket_w: int,
+    customer_w: int,
+    *,
+    show_time: bool,
+    time_w: int,
+) -> Text:
+    prefix = (
+        f"{row.ticket.ljust(ticket_w)}{SEPARATOR}"
+        f"{row.customer.ljust(customer_w)}"
+    )
+    if show_time:
+        prefix = f"{prefix}{SEPARATOR}{row.triggered.ljust(time_w)}"
+    prefix = f"{prefix}{SEPARATOR}"
+
+    line = Text()
+    line.append(prefix, style=_status_style(row.status))
+    line.append(
+        row.description,
+        style=_description_style(
+            status=row.status,
+            differs_from_pd=row.description_differs_from_pd,
+        ),
+    )
+    return line
+
+
 def render_incident_table(console: Console, rows: list[IncidentRow], *, show_time: bool = False) -> None:
     if not rows:
         return
@@ -128,12 +180,19 @@ def render_incident_table(console: Console, rows: list[IncidentRow], *, show_tim
     header = f"{header}{gap}DESCRIPTION"
     console.print(header, style="dim")
 
+    show_sync_hint = False
     for row in rows:
-        line = format_aligned_row(
-            row,
-            ticket_w,
-            customer_w,
-            show_time=show_time,
-            time_w=time_w,
+        if row.description_differs_from_pd:
+            show_sync_hint = True
+        console.print(
+            _render_row_text(
+                row,
+                ticket_w,
+                customer_w,
+                show_time=show_time,
+                time_w=time_w,
+            )
         )
-        console.print(Text(line, style=_status_style(row.status)))
+
+    if show_sync_hint:
+        _print_sync_hint(console)

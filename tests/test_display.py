@@ -1,6 +1,18 @@
 from datetime import datetime, timezone
 
-from pd_shift.display import IncidentRow, format_aligned_row, sort_incident_rows
+from io import StringIO
+
+from rich.console import Console
+from rich.text import Text
+
+from pd_shift.display import (
+    IncidentRow,
+    _description_style,
+    _render_row_text,
+    format_aligned_row,
+    render_incident_table,
+    sort_incident_rows,
+)
 
 
 def test_sort_groups_by_customer():
@@ -109,3 +121,76 @@ def test_format_aligned_row_uses_dash_separators():
     ]
     line = format_aligned_row(rows[0], ticket_w=11, customer_w=13, show_time=True, time_w=8)
     assert line == "INC0011223  - Zephyr Labs   - 2d ago   - Disk Space Low - zephyr-db-01"
+
+
+def test_render_incident_table_shows_sync_hint_when_description_differs():
+    rows = [
+        IncidentRow(
+            "INC0011223",
+            "Zephyr Labs",
+            "Disk Space Low - zephyr-db-01",
+            "triggered",
+            description_differs_from_pd=True,
+        ),
+        IncidentRow(
+            "INC0044556",
+            "Northwind LLC",
+            "Replication Lag - db-replica-2",
+            "acknowledged",
+        ),
+    ]
+    output = StringIO()
+    render_incident_table(Console(file=output, force_terminal=True, width=120), rows)
+    text = output.getvalue()
+    assert "Disk Space Low - zephyr-db-01" in text
+    # The word "underlined" is itself underlined in the legend, so ANSI codes
+    # split the phrase under force_terminal; assert the styling-stable pieces.
+    assert "Description with" in text
+    assert "where it differs from PD" in text
+    assert "pd rename <INC>" in text
+
+
+def test_render_row_underlines_description_when_differs():
+    row = IncidentRow(
+        "INC0011223",
+        "Zephyr Labs",
+        "Disk Space Low - zephyr-db-01",
+        "triggered",
+        description_differs_from_pd=True,
+    )
+    rendered = _render_row_text(row, ticket_w=11, customer_w=13, show_time=False, time_w=0)
+    desc = "Disk Space Low - zephyr-db-01"
+    start = rendered.plain.index(desc)
+    end = start + len(desc)
+    styles = [style for span_start, span_end, style in rendered._spans if span_start <= start and span_end >= end]
+    assert styles
+    assert any("underline" in str(style) for style in styles)
+
+
+def test_description_style_adds_underline_when_differs():
+    assert "underline" in _description_style(status="triggered", differs_from_pd=True)
+    assert "underline" not in _description_style(status="triggered", differs_from_pd=False)
+
+
+def test_sync_hint_underlines_the_word_underlined():
+    from pd_shift.display import _print_sync_hint
+
+    output = StringIO()
+    _print_sync_hint(Console(file=output, force_terminal=True, width=120))
+    rendered = output.getvalue()
+    assert "underlined" in rendered.replace("\n", "")
+
+    hint = Text()
+    hint.append("underlined", style="underline")
+    styles = [style for _start, _end, style in hint._spans if "underline" in str(style)]
+    assert styles
+    assert "dim" not in str(styles[0])
+
+
+def test_render_incident_table_no_sync_hint_when_all_aligned():
+    rows = [
+        IncidentRow("INC0011223", "Zephyr Labs", "Disk Space Low - zephyr-db-01", "triggered"),
+    ]
+    output = StringIO()
+    render_incident_table(Console(file=output, force_terminal=True, width=120), rows)
+    assert "pd rename" not in output.getvalue()
